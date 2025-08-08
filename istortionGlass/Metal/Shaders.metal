@@ -53,16 +53,57 @@ vertex VertexOut vertex_main(uint vid [[vertex_id]]) {
     return out;
 }
 
-// Distortion functions
+// Advanced fisheye distortion with improved accuracy and edge handling
 float2 fisheyeDistortion(float2 uv, float2 center, float strength) {
+    // Convert UV coordinates to centered coordinates (-0.5 to 0.5)
     float2 coord = uv - center;
     float distance = length(coord);
     
-    if (distance == 0.0) {
+    // Early return for center point
+    if (distance < 0.001) {
         return uv;
     }
     
-    float factor = 1.0 + strength * distance * distance;
+    // Normalize strength parameter (0.0 to 1.0 maps to usable range)
+    float normalizedStrength = strength * 2.0; // Scale to 0.0-2.0 for better control
+    
+    // Apply fisheye transformation using barrel distortion formula
+    // r' = r * (1 + k1*r^2 + k2*r^4)
+    float r2 = distance * distance;
+    float r4 = r2 * r2;
+    
+    // Coefficients for fisheye effect
+    float k1 = normalizedStrength * 0.5;
+    float k2 = normalizedStrength * 0.1;
+    
+    float distortionFactor = 1.0 + k1 * r2 + k2 * r4;
+    
+    // Clamp distortion to prevent extreme values at edges
+    distortionFactor = clamp(distortionFactor, 0.1, 3.0);
+    
+    // Apply distortion
+    float2 distortedCoord = coord * distortionFactor;
+    
+    // Return to original coordinate space
+    return center + distortedCoord;
+}
+
+// Optimized fisheye distortion for better performance
+float2 fisheyeDistortionFast(float2 uv, float2 center, float strength) {
+    float2 coord = uv - center;
+    float distance = length(coord);
+    
+    // Fast early exit
+    if (distance < 0.001) return uv;
+    
+    // Simplified barrel distortion with single coefficient
+    float k = strength * 1.5;
+    float r2 = distance * distance;
+    float factor = 1.0 + k * r2;
+    
+    // Clamp for stability
+    factor = clamp(factor, 0.2, 2.5);
+    
     return center + coord * factor;
 }
 
@@ -87,41 +128,84 @@ float2 swirlDistortion(float2 uv, float2 center, float strength, float time) {
     return center + rotated;
 }
 
-// Fragment shader
+// Passthrough fragment shader (for debugging and baseline performance)
+fragment float4 fragment_passthrough(VertexOut in [[stage_in]],
+                                    texture2d<float> inputTexture [[texture(0)]]) {
+    
+    constexpr sampler textureSampler(mag_filter::linear,
+                                   min_filter::linear,
+                                   address::clamp_to_edge);
+    
+    // Direct passthrough - no processing, just display the camera input
+    float4 color = inputTexture.sample(textureSampler, in.texCoord);
+    return color;
+}
+
+// Main fragment shader with effects and improved edge handling
 fragment float4 fragment_main(VertexOut in [[stage_in]],
                              texture2d<float> inputTexture [[texture(0)]],
                              constant Uniforms& uniforms [[buffer(0)]]) {
     
     constexpr sampler textureSampler(mag_filter::linear,
-                                   min_filter::linear);
+                                   min_filter::linear,
+                                   address::clamp_to_edge);
     
     float2 uv = in.texCoord;
     float2 distortedUV = uv;
+    float edgeFade = 1.0; // For smooth edge transitions
     
     // Apply distortion based on effect type
     switch (uniforms.effectType) {
-        case 1: // Fisheye
+        case 1: // Fisheye (High Quality)
             distortedUV = fisheyeDistortion(uv, uniforms.center, uniforms.strength);
             break;
             
-        case 2: // Ripple
+        case 2: // Fisheye (Fast Performance)
+            distortedUV = fisheyeDistortionFast(uv, uniforms.center, uniforms.strength);
+            break;
+            
+        case 3: // Ripple
             distortedUV = rippleDistortion(uv, uniforms.center, uniforms.strength, uniforms.time);
             break;
             
-        case 3: // Swirl
+        case 4: // Swirl
             distortedUV = swirlDistortion(uv, uniforms.center, uniforms.strength, uniforms.time);
             break;
             
-        default: // No effect
+        default: // No effect (passthrough)
             distortedUV = uv;
             break;
     }
     
-    // Clamp UV coordinates to prevent sampling outside texture bounds
-    distortedUV = clamp(distortedUV, 0.0, 1.0);
+    // Check if distorted coordinates are within bounds
+    bool inBounds = all(distortedUV >= 0.0) && all(distortedUV <= 1.0);
     
-    // Sample the input texture
-    float4 color = inputTexture.sample(textureSampler, distortedUV);
+    float4 color;
+    if (inBounds) {
+        // Sample the input texture
+        color = inputTexture.sample(textureSampler, distortedUV);
+        
+        // Apply edge fade for fisheye effects
+        if (uniforms.effectType == 1 || uniforms.effectType == 2) {
+            float2 fromCenter = distortedUV - uniforms.center;
+            float distanceFromCenter = length(fromCenter);
+            
+            // Create smooth fade at edges (beyond certain radius)
+            float fadeRadius = 0.4; // Start fading at 40% from center
+            float maxRadius = 0.7;  // Complete fade at 70% from center
+            
+            if (distanceFromCenter > fadeRadius) {
+                edgeFade = 1.0 - smoothstep(fadeRadius, maxRadius, distanceFromCenter);
+            }
+        }
+    } else {
+        // Use black for out-of-bounds areas with fisheye
+        color = float4(0.0, 0.0, 0.0, 1.0);
+        edgeFade = 0.0;
+    }
+    
+    // Apply edge fading
+    color.rgb *= edgeFade;
     
     return color;
 }

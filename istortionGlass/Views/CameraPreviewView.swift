@@ -15,6 +15,8 @@ struct CameraPreviewView: UIViewRepresentable {
     
     var currentEffect: MetalRenderer.DistortionEffect = .none
     var effectStrength: Float = 1.0
+    var isPassthroughMode: Bool = false
+    var performanceMonitor: PerformanceMonitor?
     
     func makeUIView(context: Context) -> MTKView {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -32,6 +34,9 @@ struct CameraPreviewView: UIViewRepresentable {
         
         // Create renderer
         let metalRenderer = MetalRenderer(device: device)
+        
+        // Set performance monitor
+        metalRenderer.performanceMonitor = performanceMonitor
         
         // Set up camera manager delegate
         cameraManager.delegate = context.coordinator
@@ -52,8 +57,12 @@ struct CameraPreviewView: UIViewRepresentable {
     func updateUIView(_ uiView: MTKView, context: Context) {
         context.coordinator.parent = self
         
-        // Update effect settings
+        // Update effect settings with real-time parameter updates
         renderer?.setEffect(currentEffect, strength: effectStrength)
+        renderer?.setPassthroughMode(isPassthroughMode)
+        
+        // Immediate strength update for smooth real-time adjustment
+        renderer?.updateEffectStrength(effectStrength)
     }
     
     func makeCoordinator() -> Coordinator {
@@ -99,5 +108,11 @@ struct CameraPreviewView: UIViewRepresentable {
 
 // Preview support
 #Preview {
-    CameraPreviewView(cameraManager: CameraManager())
+    CameraPreviewView(
+        cameraManager: CameraManager(),
+        currentEffect: .none,
+        effectStrength: 1.0,
+        isPassthroughMode: false,
+        performanceMonitor: PerformanceMonitor()
+    )
 }

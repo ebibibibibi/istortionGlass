@@ -15,6 +15,7 @@ class MetalRenderer: NSObject {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private var pipelineState: MTLRenderPipelineState?
+    private var passthroughPipelineState: MTLRenderPipelineState?
     private var vertexBuffer: MTLBuffer?
     
     // Uniform buffer for distortion parameters
@@ -25,10 +26,17 @@ class MetalRenderer: NSObject {
     
     // Current effect type
     var currentEffect: DistortionEffect = .none
+    var isPassthroughMode: Bool = false
+    
+    // Performance monitoring
+    private var frameCount = 0
+    private var lastFrameTime = CACurrentMediaTime()
+    weak var performanceMonitor: PerformanceMonitor?
     
     enum DistortionEffect {
         case none
-        case fisheye
+        case fisheyeHQ      // High Quality fisheye
+        case fisheyeFast    // Fast performance fisheye  
         case ripple
         case swirl
     }
@@ -59,9 +67,21 @@ class MetalRenderer: NSObject {
     
     // MARK: - Public Methods
     func render(to drawable: CAMetalDrawable, with texture: MTLTexture) {
-        guard let pipelineState = pipelineState,
+        let renderStartTime = CACurrentMediaTime()
+        
+        // Choose appropriate pipeline based on mode and effect
+        let selectedPipelineState: MTLRenderPipelineState?
+        
+        if isPassthroughMode || currentEffect == .none {
+            selectedPipelineState = passthroughPipelineState ?? pipelineState
+        } else {
+            selectedPipelineState = pipelineState ?? passthroughPipelineState
+        }
+        
+        guard let pipelineState = selectedPipelineState,
               let commandBuffer = commandQueue.makeCommandBuffer(),
               let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: createRenderPassDescriptor(for: drawable)) else {
+            performanceMonitor?.logPerformanceWarning("Failed to create render command buffer or encoder")
             return
         }
         
@@ -72,10 +92,12 @@ class MetalRenderer: NSObject {
             renderEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
         }
         
-        // Update and set uniforms
-        updateUniforms(resolution: simd_float2(Float(drawable.texture.width), Float(drawable.texture.height)))
-        if let uniformBuffer = uniformBuffer {
-            renderEncoder.setFragmentBuffer(uniformBuffer, offset: 0, index: 0)
+        // Only set uniforms for the main pipeline (not passthrough)
+        if !isPassthroughMode && currentEffect != .none && pipelineState === self.pipelineState {
+            updateUniforms(resolution: simd_float2(Float(drawable.texture.width), Float(drawable.texture.height)))
+            if let uniformBuffer = uniformBuffer {
+                renderEncoder.setFragmentBuffer(uniformBuffer, offset: 0, index: 0)
+            }
         }
         
         // Set texture
@@ -86,12 +108,39 @@ class MetalRenderer: NSObject {
         renderEncoder.endEncoding()
         
         commandBuffer.present(drawable)
+        
+        // Add completion handler for performance monitoring
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            let renderTime = CACurrentMediaTime() - renderStartTime
+            self?.performanceMonitor?.recordFrameRenderTime(renderTime)
+        }
+        
         commandBuffer.commit()
+        
+        // Update frame count for performance monitoring
+        frameCount += 1
     }
     
     func setEffect(_ effect: DistortionEffect, strength: Float = 1.0) {
         currentEffect = effect
         updateUniforms(strength: strength)
+    }
+    
+    func updateEffectStrength(_ strength: Float) {
+        updateUniforms(strength: strength)
+    }
+    
+    func setPassthroughMode(_ enabled: Bool) {
+        isPassthroughMode = enabled
+    }
+    
+    func getFrameCount() -> Int {
+        return frameCount
+    }
+    
+    func resetFrameCount() {
+        frameCount = 0
+        lastFrameTime = CACurrentMediaTime()
     }
     
     // MARK: - Private Methods
@@ -100,18 +149,41 @@ class MetalRenderer: NSObject {
             fatalError("Failed to create Metal library")
         }
         
-        let vertexFunction = library.makeFunction(name: "vertex_main")
-        let fragmentFunction = library.makeFunction(name: "fragment_main")
+        guard let vertexFunction = library.makeFunction(name: "vertex_main") else {
+            fatalError("Failed to find vertex_main function")
+        }
         
-        let pipelineDescriptor = MTLRenderPipelineDescriptor()
-        pipelineDescriptor.vertexFunction = vertexFunction
-        pipelineDescriptor.fragmentFunction = fragmentFunction
-        pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        // Create main pipeline with effects
+        if let fragmentFunction = library.makeFunction(name: "fragment_main") {
+            let pipelineDescriptor = MTLRenderPipelineDescriptor()
+            pipelineDescriptor.vertexFunction = vertexFunction
+            pipelineDescriptor.fragmentFunction = fragmentFunction
+            pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            
+            do {
+                pipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+            } catch {
+                print("Failed to create main pipeline state: \(error)")
+            }
+        }
         
-        do {
-            pipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
-        } catch {
-            fatalError("Failed to create pipeline state: \(error)")
+        // Create passthrough pipeline for debugging
+        if let passthroughFunction = library.makeFunction(name: "fragment_passthrough") {
+            let passthroughDescriptor = MTLRenderPipelineDescriptor()
+            passthroughDescriptor.vertexFunction = vertexFunction
+            passthroughDescriptor.fragmentFunction = passthroughFunction
+            passthroughDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            
+            do {
+                passthroughPipelineState = try device.makeRenderPipelineState(descriptor: passthroughDescriptor)
+            } catch {
+                print("Failed to create passthrough pipeline state: \(error)")
+            }
+        }
+        
+        // Ensure at least one pipeline was created
+        guard pipelineState != nil || passthroughPipelineState != nil else {
+            fatalError("Failed to create any Metal pipeline states")
         }
     }
     
@@ -171,9 +243,27 @@ extension MetalRenderer.DistortionEffect {
     var rawValue: Int {
         switch self {
         case .none: return 0
-        case .fisheye: return 1
-        case .ripple: return 2
-        case .swirl: return 3
+        case .fisheyeHQ: return 1
+        case .fisheyeFast: return 2
+        case .ripple: return 3
+        case .swirl: return 4
+        }
+    }
+    
+    var displayName: String {
+        switch self {
+        case .none: return "Original"
+        case .fisheyeHQ: return "Fisheye HQ"
+        case .fisheyeFast: return "Fisheye Fast"
+        case .ripple: return "Ripple"
+        case .swirl: return "Swirl"
+        }
+    }
+    
+    var isPerformanceOptimized: Bool {
+        switch self {
+        case .fisheyeFast: return true
+        default: return false
         }
     }
 }
