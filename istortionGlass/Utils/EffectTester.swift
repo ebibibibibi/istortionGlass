@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftUI
+import Combine
 
 class EffectTester: ObservableObject {
     
@@ -143,9 +144,9 @@ class EffectTester: ObservableObject {
         print("=== Effect Performance Test Results ===")
         for result in testResults {
             print("\(result.effect.displayName) @ \(Int(result.strength * 100))%:")
-            print("  FPS: \(result.averageFPS, specifier: "%.1f")")
-            print("  GPU: \(result.gpuLoad, specifier: "%.1f")%")
-            print("  Frame Time: \(result.frameTime, specifier: "%.1f")ms")
+            print("  FPS: \(String(format: "%.1f", result.averageFPS))")
+            print("  GPU: \(String(format: "%.1f", result.gpuLoad))%")
+            print("  Frame Time: \(String(format: "%.1f", result.frameTime))ms")
             print("  Drops: \(result.frameDrops)")
             print("  Memory: \(result.memoryUsage / 1024 / 1024)MB")
             print("  Thermal: \(result.thermalState)")

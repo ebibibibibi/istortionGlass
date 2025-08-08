@@ -9,6 +9,7 @@ import AVFoundation
 import Metal
 import MetalKit
 import SwiftUI
+import Combine
 
 protocol CameraManagerDelegate: AnyObject {
     func cameraManager(_ manager: CameraManager, didOutput sampleBuffer: CMSampleBuffer)

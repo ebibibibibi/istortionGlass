@@ -204,24 +204,25 @@ class MetalRenderer: NSObject {
     }
     
     private func updateUniforms(resolution: simd_float2? = nil, strength: Float? = nil) {
-        guard let uniformBuffer = uniformBuffer,
-              let contents = uniformBuffer.contents().bindMemory(to: Uniforms.self, capacity: 1) else {
+        guard let uniformBuffer = uniformBuffer else {
             return
         }
+
+        let contents = uniformBuffer.contents().bindMemory(to: Uniforms.self, capacity: 1)
         
         let currentTime = Float(CACurrentMediaTime())
         
         var uniforms = contents.pointee
         uniforms.time = currentTime
-        
+
         if let resolution = resolution {
             uniforms.resolution = resolution
         }
-        
+
         if let strength = strength {
             uniforms.strength = strength
         }
-        
+
         uniforms.effectType = Int32(currentEffect.rawValue)
         uniforms.center = simd_float2(0.5, 0.5) // Center of the screen
         

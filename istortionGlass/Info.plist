@@ -2,6 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.yourdomain.istortionglass.$(USER)</string>
+	<key>CFBundleName</key>
+	<string>istortionGlass</string>
+	<key>CFBundleDisplayName</key>
+	<string>istortionGlass</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs camera access to capture and apply real-time distortion effects to the live video feed.</string>
 	<key>UILaunchStoryboardName</key>

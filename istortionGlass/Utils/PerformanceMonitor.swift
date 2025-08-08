@@ -8,6 +8,7 @@
 import Foundation
 import Metal
 import os.log
+import Combine
 
 class PerformanceMonitor: ObservableObject {
     
@@ -115,7 +116,7 @@ class PerformanceMonitor: ObservableObject {
     }
     
     private func updateMemoryUsage() {
-        let memoryInfo = mach_task_basic_info()
+        var memoryInfo = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
         
         let result = withUnsafeMutablePointer(to: &memoryInfo) {

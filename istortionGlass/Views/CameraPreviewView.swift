@@ -7,6 +7,7 @@
 
 import SwiftUI
 import MetalKit
+import CoreMedia
 
 struct CameraPreviewView: UIViewRepresentable {
     @ObservedObject var cameraManager: CameraManager
