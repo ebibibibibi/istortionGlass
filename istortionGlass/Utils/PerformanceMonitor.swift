@@ -8,6 +8,7 @@
 import Foundation
 import Metal
 import os.log
+import QuartzCore
 import Combine
 
 class PerformanceMonitor: ObservableObject {
