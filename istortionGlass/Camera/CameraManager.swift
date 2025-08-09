@@ -5,6 +5,8 @@
 //  Created by KotomiTakahashi on 2025/08/08.
 //
 
+// カメラI/O専任
+
 import AVFoundation
 import Metal
 import MetalKit
