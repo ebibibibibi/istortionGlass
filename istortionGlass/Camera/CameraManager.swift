@@ -5,7 +5,16 @@
 //  Created by KotomiTakahashi on 2025/08/08.
 //
 
-// カメラI/O専任
+// カメラI/O専任（CPU側）
+// ───────────────────────────────────────────
+// このファイルに登場する Metal 系オブジェクトの役割
+// - MTLDevice: GPU との入り口。各種リソースやキューを「生成する工場」
+// - MTLCommandQueue: GPU に流すコマンドバッファを作る「製造ライン」
+//                   （このファイルでは“保持”のみ。実際の描画は別層で使用）
+// - MTLTexture: GPU（または共有メモリ）上の画像データ本体（テクスチャ）
+// - CVMetalTextureCache: CoreVideoのPixelBufferをMetalのTextureへ橋渡しするキャッシュ
+//                        多くの場合 IOSurface 共有によりコピーなし/低コストで変換できる
+// ───────────────────────────────────────────
 
 import AVFoundation
 import Metal
@@ -32,20 +41,28 @@ class CameraManager: NSObject, ObservableObject {
     private var videoDevice: AVCaptureDevice?
     private var videoInput: AVCaptureDeviceInput?
     private let videoOutput = AVCaptureVideoDataOutput()
+    
+    // CPU並行処理用のシリアルキューを2本。
+    // 同一キュー内は順次実行、別キュー間は並行に進められる。
     private let captureQueue = DispatchQueue(label: "camera.capture.queue", qos: .userInteractive)
     private let textureQueue = DispatchQueue(label: "texture.processing.queue", qos: .userInteractive)
     
     // Metal properties
+    // MTLDevice: GPUデバイスのハンドル。各種Metalオブジェクト生成の起点。
     private let device: MTLDevice
+    // MTLCommandQueue: コマンドバッファを生み出すキュー（製造ライン）。
+    // このクラスはカメラI/O担当なので、描画は別オブジェクトで行い、ここでは共有/保持のみ。
     private let commandQueue: MTLCommandQueue
+    // CVMetalTextureCache: CVPixelBuffer →（ラップ）→ MTLTexture を作るブリッジ兼キャッシュ。
+    // 連続フレームでも割り当て負荷を抑え、ゼロコピー/低コピーでGPUが読める形にする。
     private var textureCache: CVMetalTextureCache?
     
-    // FPS tracking
+    // FPS tracking（目安用カウンタ）
     private var frameCount = 0
     private var lastTimestamp = CACurrentMediaTime()
     private let fpsUpdateInterval: TimeInterval = 1.0
     
-    // Error handling
+    // Error handling（連続失敗時に停止して通知）
     private var consecutiveTextureFailures = 0
     private let maxConsecutiveFailures = 10
     
@@ -53,10 +70,11 @@ class CameraManager: NSObject, ObservableObject {
     
     // MARK: - Initialization
     override init() {
+        // MTLDevice: システム標準のGPUを取得。
         guard let device = MTLCreateSystemDefaultDevice() else {
             fatalError("Metal is not supported on this device")
         }
-        
+        // MTLCommandQueue: 後段（レンダラ）が使うコマンドバッファの製造ラインを用意。
         guard let commandQueue = device.makeCommandQueue() else {
             fatalError("Failed to create Metal command queue")
         }
@@ -66,7 +84,8 @@ class CameraManager: NSObject, ObservableObject {
         
         super.init()
         
-        // Create texture cache with error handling
+        // CVMetalTextureCache: PixelBuffer→Texture 変換のキャッシュを作成。
+        // これにより各フレームのラップ作成コストを抑えられる。
         let cacheResult = CVMetalTextureCacheCreate(
             kCFAllocatorDefault,
             nil,
@@ -74,7 +93,6 @@ class CameraManager: NSObject, ObservableObject {
             nil,
             &textureCache
         )
-        
         if cacheResult != kCVReturnSuccess {
             fatalError("Failed to create CVMetalTextureCache: \(cacheResult)")
         }
@@ -86,7 +104,7 @@ class CameraManager: NSObject, ObservableObject {
     // MARK: - Public Methods
     func startSession() {
         guard hasPermission else { return }
-        
+        // セッション制御はキャプチャ用キューで（UIスレッドを塞がない）
         captureQueue.async { [weak self] in
             self?.captureSession.startRunning()
             DispatchQueue.main.async {
@@ -132,7 +150,7 @@ class CameraManager: NSObject, ObservableObject {
     private func setupSession() {
         captureSession.sessionPreset = .high
         
-        // Setup video input
+        // カメラ入力の用意
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
               let input = try? AVCaptureDeviceInput(device: device) else {
             print("Failed to create video input")
@@ -146,17 +164,17 @@ class CameraManager: NSObject, ObservableObject {
             captureSession.addInput(input)
         }
         
-        // Setup video output
+        // カメラ出力の用意（BGRAで受け取る）
+        // デリゲートは captureQueue（I/Oトレッド）で呼ばれる。
         videoOutput.setSampleBufferDelegate(self, queue: captureQueue)
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ]
-        
         if captureSession.canAddOutput(videoOutput) {
             captureSession.addOutput(videoOutput)
         }
         
-        // Configure video orientation and connection
+        // 接続設定
         if let connection = videoOutput.connection(with: .video) {
             connection.videoOrientation = .portrait
             if connection.isVideoMirroringSupported {
@@ -164,17 +182,14 @@ class CameraManager: NSObject, ObservableObject {
             }
         }
         
-        // Try to set frame rate to 30 FPS
+        // 目標FPS設定（可能な範囲で30fpsへ）
         configureFPS()
     }
     
     private func configureFPS() {
         guard let device = videoDevice else { return }
-        
         do {
             try device.lockForConfiguration()
-            
-            // Find 30 FPS format
             let targetFPS = 30.0
             for format in device.formats {
                 for range in format.videoSupportedFrameRateRanges {
@@ -186,13 +201,14 @@ class CameraManager: NSObject, ObservableObject {
                     }
                 }
             }
-            
             device.unlockForConfiguration()
         } catch {
             print("Failed to configure frame rate: \(error)")
         }
     }
     
+    // sampleBuffer（CVPixelBuffer）→ MTLTexture への変換
+    // ここが「CPUでGPUが読める形に整える」ポイント。
     private func createTexture(from sampleBuffer: CMSampleBuffer) -> MTLTexture? {
         guard let textureCache = textureCache,
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
@@ -202,50 +218,51 @@ class CameraManager: NSObject, ObservableObject {
         
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
-        
-        // Validate dimensions
         guard width > 0 && height > 0 else {
             handleTextureFailure("Invalid texture dimensions: \(width)x\(height)")
             return nil
         }
         
+        // CVMetalTextureCacheCreateTextureFromImage:
+        // PixelBuffer を GPU が参照できるテクスチャビュー（CVMetalTexture）にラップする。
+        // 多くの構成で IOSurface 共有により実質ゼロコピー。
         var cvTexture: CVMetalTexture?
         let status = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
             pixelBuffer,
             nil,
-            .bgra8Unorm,
+            .bgra8Unorm,   // MTLTexture のピクセルフォーマット
             width,
             height,
             0,
             &cvTexture
         )
-        
         guard status == kCVReturnSuccess else {
             handleTextureFailure("CVMetalTextureCache creation failed: \(status)")
             return nil
         }
         
+        // CVMetalTextureGetTexture:
+        // CoreVideoラッパ（CVMetalTexture）から Metalの MTLTexture を取得。
+        // 取得後は cvTexture 自体を保持し続ける必要は通常ない（同じ基盤メモリを参照）。
         guard let cvTexture = cvTexture,
               let metalTexture = CVMetalTextureGetTexture(cvTexture) else {
             handleTextureFailure("Failed to get Metal texture from CVMetalTexture")
             return nil
         }
         
-        // Reset failure count on success
+        // 成功したので失敗カウンタをリセットし、UIのエラー表示をクリア。
         consecutiveTextureFailures = 0
         DispatchQueue.main.async { [weak self] in
             self?.errorMessage = nil
         }
-        
-        return metalTexture
+        return metalTexture // ← ここで返すのが MTLTexture（GPUが使う画像データ）
     }
     
     private func handleTextureFailure(_ message: String) {
         consecutiveTextureFailures += 1
         print("Texture creation failure #\(consecutiveTextureFailures): \(message)")
-        
         if consecutiveTextureFailures >= maxConsecutiveFailures {
             DispatchQueue.main.async { [weak self] in
                 self?.errorMessage = "Metal texture processing failed. Restart required."
@@ -258,14 +275,11 @@ class CameraManager: NSObject, ObservableObject {
         frameCount += 1
         let currentTime = CACurrentMediaTime()
         let elapsed = currentTime - lastTimestamp
-        
         if elapsed >= fpsUpdateInterval {
             let calculatedFPS = Int(Double(frameCount) / elapsed)
-            
             DispatchQueue.main.async { [weak self] in
                 self?.fps = calculatedFPS
             }
-            
             frameCount = 0
             lastTimestamp = currentTime
         }
@@ -275,18 +289,18 @@ class CameraManager: NSObject, ObservableObject {
 // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        
-        // Update FPS counter
+        // FPS更新（計測系は軽いのでここで）
         updateFPS()
         
-        // Process texture creation on background queue to prevent frame drops
+        // 画像→テクスチャ変換は別キューで。I/OとUIを塞がないようにする。
         textureQueue.async { [weak self] in
             guard let self = self else { return }
-            
-            // Create Metal texture from sample buffer
+            // sampleBuffer（CVPixelBuffer）を MTLTexture に変換
             let texture = self.createTexture(from: sampleBuffer)
             
+            // UI更新やデリゲート通知はメインスレッドで。
             DispatchQueue.main.async {
+                // previewTexture は「GPUが使う元画像」をUIプレビューにも流用。
                 self.previewTexture = texture
                 self.delegate?.cameraManager(self, didOutput: sampleBuffer)
                 self.delegate?.cameraManager(self, didUpdatePreview: texture)

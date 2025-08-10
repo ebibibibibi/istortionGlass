@@ -1,0 +1,44 @@
+@startuml
+title Metal: CPU→GPU の描画フローとシェーダの居場所
+
+actor "App(UI/SwiftUI)" as APP
+participant "Renderer\n(MetalRenderer)" as R
+participant "MTLCommandQueue" as Q
+participant "MTLCommandBuffer" as CB
+participant "MTLRenderCommandEncoder" as ENC
+box "GPU Pipeline" #LightBlue
+participant "Vertex Shader\n(vertex_main)" as VS
+participant "Rasterizer\n(固定機能)" as RAS
+participant "Fragment Shader\n(fragment_main / passthrough)" as FS
+participant "Output Merger\n(Blending/Depth)" as OM
+end box
+participant "Drawable/Framebuffer" as FB
+
+APP -> R : set uniforms / set textures\n(e.g. strength, center)
+R -> Q : makeCommandBuffer()
+Q -> CB : (new CB)
+R -> CB : makeRenderCommandEncoder(RPDesc)
+CB -> ENC : (encoder)
+R -> ENC : setRenderPipelineState(pipeline)\nsetVertexBuffer / setFragmentBuffer(Uniforms)\nsetFragmentTexture(inputTexture)
+R -> ENC : drawPrimitives(.triangleStrip, 4)
+ENC -> CB : endEncoding()
+R -> CB : present(drawable)
+R -> CB : addCompletedHandler(...)
+R -> CB : commit()  // 非同期でGPUへ送る
+
+== GPU 実行 ==
+CB -> VS : 頂点ごとに実行\n(位置→クリップ座標, UV受け渡し)
+VS -> RAS : 三角形をピクセルへ分解\n(補間されたUV/属性を生成)
+RAS -> FS : ピクセルごとに実行\n(テクスチャ参照・エフェクト計算)
+FS -> OM : 出力色を結合(ブレンド/深度)
+OM -> FB : 書き込み
+
+note right of FS
+fragment_main/passthrough がここ
+・fisheye/ripple/swirl などの処理
+・discard_fragment() で描かない選択も可
+end note
+
+== 次フレームの重なり ==
+APP -> R : prepare next frame (n+1)
+@enduml
