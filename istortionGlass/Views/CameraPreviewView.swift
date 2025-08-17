@@ -44,6 +44,10 @@ struct CameraPreviewView: UIViewRepresentable {
 
         // ピクセルフォーマットは RenderPipeline と一致させること（.bgra8Unorm）
         mtkView.colorPixelFormat = .bgra8Unorm
+        
+        // 深度バッファを無効化（フルスクリーンクアッドには不要）
+        // これによりタイルメモリを節約し、TBDRの効率を最大化
+        mtkView.depthStencilPixelFormat = .invalid
 
         // 描画モード: 連続描画（display link 駆動）
         mtkView.preferredFramesPerSecond = 30
